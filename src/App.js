@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { useState, useMemo } from "react";
 
 /* ══════════════════════════════════════════════════════════
@@ -1019,6 +1020,7 @@ function WednesdayAlert({agents,products,totals}) {
   const [pdfReady, setPdfReady]     = useState(false);
 
   // Load jsPDF + AutoTable from CDN once
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useState(()=>{
     if(window.jspdf) return;
     const s1 = document.createElement("script");

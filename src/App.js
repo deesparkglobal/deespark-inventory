@@ -1,5 +1,7 @@
 /* eslint-disable */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, setDoc, onSnapshot } from "firebase/firestore";
 
 /* ══════════════════════════════════════════════════════════
    STOCKPULSE NG — Full Inventory Management System
@@ -39,6 +41,18 @@ const suggestQty = (agent, products) => {
 };
 
 /* ── SEED ADMIN ── */
+/* ── Firebase Config ── */
+const firebaseConfig = {
+  apiKey: "AIzaSyB46xvdqJkHK6Q4KFRd7GeYb8OmuRht_68",
+  authDomain: "deespark-inventory.firebaseapp.com",
+  projectId: "deespark-inventory",
+  storageBucket: "deespark-inventory.firebasestorage.app",
+  messagingSenderId: "1036840754019",
+  appId: "1:1036840754019:web:639eb47cec021d47809156"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
 const INIT_STATE = {
   products: [],
   agents: [],
@@ -46,12 +60,58 @@ const INIT_STATE = {
   pendingEntries: [],
 };
 
+const DB_DOC = "appdata/main";
+
 /* ══ ROOT ══════════════════════════════════════════════════ */
 export default function App() {
   const [state, setState]   = useState(INIT_STATE);
-  const [session, setSession] = useState(null); // {id,name,role,username,assignedAgents}
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const update = fn => setState(fn);
+  // Load data from Firestore on startup
+  useEffect(()=>{
+    const ref = doc(db, "appdata", "main");
+    const unsub = onSnapshot(ref, (snap)=>{
+      if(snap.exists()){
+        const data = snap.data();
+        setState(prev => ({
+          ...INIT_STATE,
+          ...data,
+          // Always keep at least the default admin
+          staff: data.staff && data.staff.length > 0 ? data.staff : INIT_STATE.staff,
+        }));
+      }
+      setLoading(false);
+    }, (err)=>{
+      console.error("Firestore error:", err);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Save to Firestore whenever state changes
+  const update = fn => {
+    setState(prev => {
+      const next = fn(prev);
+      // Save to Firestore (async, non-blocking)
+      const ref = doc(db, "appdata", "main");
+      setDoc(ref, next).catch(e => console.error("Save error:", e));
+      return next;
+    });
+  };
+
+  if(loading) return (
+    <div style={{minHeight:"100vh",background:"#07090f",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Outfit',sans-serif"}}>
+      <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@700;900&display=swap" rel="stylesheet"/>
+      <div style={{textAlign:"center"}}>
+        <div style={{width:54,height:54,borderRadius:14,background:"linear-gradient(135deg,#6366f1,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,margin:"0 auto 20px"}}>⬡</div>
+        <div style={{fontSize:18,fontWeight:900,color:"#f1f5f9",marginBottom:8}}>StockPulse NG</div>
+        <div style={{fontSize:13,color:"#475569",marginBottom:20}}>Loading your data...</div>
+        <div style={{width:40,height:40,border:"3px solid #1a2238",borderTop:"3px solid #6366f1",borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto"}}/>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    </div>
+  );
 
   if (!session) return <Login staff={state.staff} onLogin={s=>setSession(s)}/>;
 
@@ -383,6 +443,7 @@ function AdminApp({ state, update, session, setSession }) {
     {key:"setup",     label:"Setup",          icon:"⚙", highlight:agents.length===0||products.length===0},
     {key:"agents",    label:"All Agents",     icon:"◉"},
     {key:"staff",     label:"Staff",          icon:"👤"},
+    {key:"passwords", label:"Passwords",      icon:"🔑"},
     {key:"approvals", label:"Approvals",      icon:"✓", badge:pendingCount, badgeColor:"#f59e0b"},
     {key:"stock",     label:"Stock Manager",  icon:"▦"},
     {key:"wednesday", label:"Wed Alert",      icon:"⚑", badge:totals.critical.length},
@@ -397,6 +458,7 @@ function AdminApp({ state, update, session, setSession }) {
       {tab==="setup"     && <Setup {...sharedProps}/>}
       {tab==="agents"    && <AgentsView agents={agents} products={products}/>}
       {tab==="staff"     && <StaffManager {...sharedProps}/>}
+      {tab==="passwords"  && <PasswordManager staff={staff} session={session} updateStaff={updateStaff}/>}
       {tab==="approvals" && <Approvals {...sharedProps}/>}
       {tab==="stock"     && <StockManager {...sharedProps}/>}
       {tab==="wednesday" && <WednesdayAlert agents={agents} products={products} totals={totals}/>}
@@ -415,16 +477,18 @@ function StaffApp({ state, update, session, setSession }) {
   const submitEntry = entry => update(s=>({...s,pendingEntries:[...s.pendingEntries,{...entry,id:uid(),staffId:session.id,staffName:session.name,status:"pending",submittedAt:new Date().toISOString()}]}));
 
   const NAV = [
-    {key:"entry",   label:"Log Delivery",  icon:"✎"},
-    {key:"mystatus",label:"My Submissions", icon:"◎", badge:myPending, badgeColor:"#f59e0b"},
-    {key:"mystock", label:"My Stock View",  icon:"▦"},
+    {key:"entry",      label:"Log Delivery",   icon:"✎"},
+    {key:"mystatus",   label:"My Submissions",  icon:"◎", badge:myPending, badgeColor:"#f59e0b"},
+    {key:"mystock",    label:"My Stock View",   icon:"▦"},
+    {key:"changepass", label:"Change Password", icon:"🔑"},
   ];
 
   return (
     <Shell session={session} setSession={setSession} nav={NAV} activeTab={tab} setTab={setTab}>
       {tab==="entry"    && <StaffEntry myAgents={myAgents} products={state.products} submitEntry={submitEntry}/>}
       {tab==="mystatus" && <MySubmissions pendingEntries={state.pendingEntries.filter(e=>e.staffId===session.id)} agents={state.agents}/>}
-      {tab==="mystock"  && <MyStockView myAgents={myAgents} products={state.products}/>}
+      {tab==="mystock"    && <MyStockView myAgents={myAgents} products={state.products}/>}
+      {tab==="changepass" && <ChangePassword session={session} updateStaff={updateStaff} state={state}/>}
     </Shell>
   );
 }
@@ -1646,6 +1710,244 @@ function MyStockView({myAgents,products}) {
           </div>
         </Card>
       ))}
+    </div>
+  );
+}
+
+/* ══ ADMIN: PASSWORD MANAGER ═══════════════════════════════ */
+function PasswordManager({staff, session, updateStaff}) {
+  const [selectedId, setSelectedId] = useState("");
+  const [newPass,    setNewPass]    = useState("");
+  const [confirm,    setConfirm]    = useState("");
+  const [msg,        setMsg]        = useState(null);
+  const flash = (text,type="good") => { setMsg({text,type}); setTimeout(()=>setMsg(null),3500); };
+
+  // Admin change own password
+  const [adminOld,  setAdminOld]  = useState("");
+  const [adminNew,  setAdminNew]  = useState("");
+  const [adminConf, setAdminConf] = useState("");
+
+  const changeStaffPass = () => {
+    if(!selectedId)          return flash("Select a staff member","warn");
+    if(!newPass.trim())      return flash("Enter a new password","warn");
+    if(newPass.length < 6)   return flash("Password must be at least 6 characters","warn");
+    if(newPass !== confirm)  return flash("Passwords do not match","warn");
+    updateStaff(selectedId, s => ({...s, password: newPass.trim()}));
+    setSelectedId(""); setNewPass(""); setConfirm("");
+    flash("Password updated successfully!");
+  };
+
+  const changeAdminPass = () => {
+    const adminStaff = staff.find(s => s.id === session.id);
+    if(!adminStaff) return;
+    if(adminOld !== adminStaff.password) return flash("Current password is incorrect","warn");
+    if(!adminNew.trim())                 return flash("Enter a new password","warn");
+    if(adminNew.length < 6)             return flash("Password must be at least 6 characters","warn");
+    if(adminNew !== adminConf)          return flash("New passwords do not match","warn");
+    updateStaff(session.id, s => ({...s, password: adminNew.trim()}));
+    setAdminOld(""); setAdminNew(""); setAdminConf("");
+    flash("Your admin password has been updated!");
+  };
+
+  const nonAdminStaff = staff.filter(s => s.role !== "admin");
+
+  return (
+    <div>
+      <PageHeader title="Password Management" sub="Reset staff passwords or update your own admin password"/>
+      {msg && <InfoBox type={msg.type}>{msg.text}</InfoBox>}
+
+      <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
+
+        {/* RESET STAFF PASSWORD */}
+        <Card>
+          <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",marginBottom:6}}>🔑 Reset a Staff Password</div>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:18}}>Use this when a staff member forgets their password.</div>
+
+          {nonAdminStaff.length === 0
+            ? <div style={{textAlign:"center",padding:"30px 0",color:"#334155",fontSize:13}}>No staff registered yet.<br/>Add staff in the Staff tab first.</div>
+            : <>
+              <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:20}}>
+                <Sel label="Select Staff Member" value={selectedId} onChange={e=>setSelectedId(e.target.value)}>
+                  <option value="">— Choose staff member —</option>
+                  {nonAdminStaff.map(s=>(
+                    <option key={s.id} value={s.id}>{s.name} (@{s.username})</option>
+                  ))}
+                </Sel>
+                <Inp label="New Password" type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Enter new password (min 6 characters)"/>
+                <Inp label="Confirm New Password" type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter new password"/>
+              </div>
+
+              {/* Password strength indicator */}
+              {newPass.length > 0 && (
+                <div style={{marginBottom:16}}>
+                  <div style={{fontSize:11,color:"#64748b",marginBottom:6}}>Password strength:</div>
+                  <div style={{height:6,background:"#1a2238",borderRadius:3,overflow:"hidden"}}>
+                    <div style={{
+                      height:"100%",borderRadius:3,transition:"width .3s",
+                      width: newPass.length<6?"20%":newPass.length<8?"50%":newPass.length<12?"75%":"100%",
+                      background: newPass.length<6?"#ef4444":newPass.length<8?"#f59e0b":newPass.length<12?"#6366f1":"#10b981",
+                    }}/>
+                  </div>
+                  <div style={{fontSize:11,color:newPass.length<6?"#ef4444":newPass.length<8?"#f59e0b":newPass.length<12?"#818cf8":"#10b981",marginTop:4}}>
+                    {newPass.length<6?"Too short":newPass.length<8?"Weak":newPass.length<12?"Good":"Strong"}
+                  </div>
+                </div>
+              )}
+
+              {newPass && confirm && newPass !== confirm && (
+                <div style={{fontSize:12,color:"#ef4444",marginBottom:12}}>⚠️ Passwords do not match</div>
+              )}
+              {newPass && confirm && newPass === confirm && (
+                <div style={{fontSize:12,color:"#10b981",marginBottom:12}}>✅ Passwords match</div>
+              )}
+
+              <Btn onClick={changeStaffPass} style={{width:"100%"}}>Reset Password →</Btn>
+            </>
+          }
+        </Card>
+
+        {/* CHANGE ADMIN OWN PASSWORD */}
+        <Card>
+          <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",marginBottom:6}}>🛡️ Change Your Admin Password</div>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:18}}>Update your own login password. You will need to use the new password on your next login.</div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:20}}>
+            <Inp label="Current Password" type="password" value={adminOld} onChange={e=>setAdminOld(e.target.value)} placeholder="Enter your current password"/>
+            <Inp label="New Password" type="password" value={adminNew} onChange={e=>setAdminNew(e.target.value)} placeholder="Enter new password (min 6 characters)"/>
+            <Inp label="Confirm New Password" type="password" value={adminConf} onChange={e=>setAdminConf(e.target.value)} placeholder="Re-enter new password"/>
+          </div>
+
+          {adminNew.length > 0 && (
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:11,color:"#64748b",marginBottom:6}}>Password strength:</div>
+              <div style={{height:6,background:"#1a2238",borderRadius:3,overflow:"hidden"}}>
+                <div style={{
+                  height:"100%",borderRadius:3,transition:"width .3s",
+                  width: adminNew.length<6?"20%":adminNew.length<8?"50%":adminNew.length<12?"75%":"100%",
+                  background: adminNew.length<6?"#ef4444":adminNew.length<8?"#f59e0b":adminNew.length<12?"#6366f1":"#10b981",
+                }}/>
+              </div>
+            </div>
+          )}
+
+          {adminNew && adminConf && adminNew !== adminConf && (
+            <div style={{fontSize:12,color:"#ef4444",marginBottom:12}}>⚠️ Passwords do not match</div>
+          )}
+          {adminNew && adminConf && adminNew === adminConf && (
+            <div style={{fontSize:12,color:"#10b981",marginBottom:12}}>✅ Passwords match</div>
+          )}
+
+          <Btn onClick={changeAdminPass} style={{width:"100%"}}>Update My Password →</Btn>
+
+          <div style={{marginTop:14,background:"#f59e0b10",border:"1px solid #f59e0b25",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#f59e0b"}}>
+            ⚠️ Make sure to remember your new password. There is no password recovery option.
+          </div>
+        </Card>
+      </div>
+
+      {/* STAFF PASSWORD TABLE */}
+      {nonAdminStaff.length > 0 && (
+        <Card style={{marginTop:20}}>
+          <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",marginBottom:16}}>👥 All Staff Accounts</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead>
+                <tr style={{background:"#07090f"}}>
+                  <TH>#</TH><TH>Name</TH><TH>Username</TH><TH>Role</TH><TH>Assigned Agents</TH><TH>Action</TH>
+                </tr>
+              </thead>
+              <tbody>
+                {nonAdminStaff.map((s,i)=>(
+                  <tr key={s.id} className="rhov">
+                    <TD><span style={{fontFamily:"'JetBrains Mono',monospace",color:"#334155",fontSize:11}}>{String(i+1).padStart(2,"0")}</span></TD>
+                    <TD><b style={{color:"#f1f5f9"}}>{s.name}</b></TD>
+                    <TD><span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#6366f1"}}>@{s.username}</span></TD>
+                    <TD><span style={{fontSize:11,background:"#6366f115",color:"#818cf8",padding:"2px 8px",borderRadius:20,border:"1px solid #6366f125",textTransform:"capitalize"}}>{s.role}</span></TD>
+                    <TD><span style={{fontSize:12,color:"#64748b"}}>{s.assignedAgents?.length||0} agent{s.assignedAgents?.length!==1?"s":""}</span></TD>
+                    <TD>
+                      <Btn small variant="ghost" onClick={()=>{ setSelectedId(s.id); setNewPass(""); setConfirm(""); window.scrollTo({top:0,behavior:"smooth"}); }}>
+                        Reset Password
+                      </Btn>
+                    </TD>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ══ STAFF: CHANGE OWN PASSWORD ═════════════════════════════ */
+function ChangePassword({session, updateStaff, state}) {
+  const [oldPass,  setOldPass]  = useState("");
+  const [newPass,  setNewPass]  = useState("");
+  const [confirm,  setConfirm]  = useState("");
+  const [msg,      setMsg]      = useState(null);
+  const flash = (text,type="good") => { setMsg({text,type}); setTimeout(()=>setMsg(null),3500); };
+
+  const save = () => {
+    const me = state.staff.find(s => s.id === session.id);
+    if(!me)                         return flash("Session error. Please log out and back in.","warn");
+    if(oldPass !== me.password)     return flash("Current password is incorrect","warn");
+    if(!newPass.trim())             return flash("Enter a new password","warn");
+    if(newPass.length < 6)         return flash("Password must be at least 6 characters","warn");
+    if(newPass !== confirm)        return flash("New passwords do not match","warn");
+    updateStaff(session.id, s => ({...s, password: newPass.trim()}));
+    setOldPass(""); setNewPass(""); setConfirm("");
+    flash("Your password has been changed successfully! Use the new password next time you log in.");
+  };
+
+  return (
+    <div>
+      <PageHeader title="Change Password" sub="Update your login password"/>
+      {msg && <InfoBox type={msg.type}>{msg.text}</InfoBox>}
+
+      <div style={{maxWidth:420}}>
+        <Card>
+          <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",marginBottom:6}}>🔑 Change Your Password</div>
+          <div style={{fontSize:12,color:"#64748b",marginBottom:20}}>
+            Logged in as <b style={{color:"#818cf8"}}>@{session.username}</b>
+          </div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:20}}>
+            <Inp label="Current Password" type="password" value={oldPass} onChange={e=>setOldPass(e.target.value)} placeholder="Enter your current password"/>
+            <Inp label="New Password" type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="At least 6 characters"/>
+            <Inp label="Confirm New Password" type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter new password"/>
+          </div>
+
+          {/* Strength bar */}
+          {newPass.length > 0 && (
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:11,color:"#64748b",marginBottom:5}}>Password strength:</div>
+              <div style={{height:6,background:"#1a2238",borderRadius:3,overflow:"hidden"}}>
+                <div style={{
+                  height:"100%",borderRadius:3,transition:"width .3s",
+                  width:newPass.length<6?"20%":newPass.length<8?"50%":newPass.length<12?"75%":"100%",
+                  background:newPass.length<6?"#ef4444":newPass.length<8?"#f59e0b":newPass.length<12?"#6366f1":"#10b981",
+                }}/>
+              </div>
+              <div style={{fontSize:11,marginTop:3,color:newPass.length<6?"#ef4444":newPass.length<8?"#f59e0b":"#10b981"}}>
+                {newPass.length<6?"Too short — add more characters":newPass.length<8?"Weak":newPass.length<12?"Good":"Strong"}
+              </div>
+            </div>
+          )}
+
+          {newPass && confirm && (
+            <div style={{fontSize:12,marginBottom:14,color:newPass===confirm?"#10b981":"#ef4444"}}>
+              {newPass===confirm?"✅ Passwords match":"⚠️ Passwords do not match"}
+            </div>
+          )}
+
+          <Btn onClick={save} style={{width:"100%"}}>Save New Password →</Btn>
+
+          <div style={{marginTop:14,background:"#6366f110",border:"1px solid #6366f125",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#818cf8"}}>
+            💡 After changing your password, use the new one the next time you sign in.
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

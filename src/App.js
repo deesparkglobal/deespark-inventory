@@ -68,6 +68,23 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Restore session from localStorage on startup
+  useEffect(()=>{
+    try {
+      const saved = localStorage.getItem("sp_session");
+      if(saved){
+        const parsed = JSON.parse(saved);
+        // Check if session is less than 24 hours old
+        const age = Date.now() - (parsed.savedAt || 0);
+        if(age < 24 * 60 * 60 * 1000){
+          setSession(parsed.session);
+        } else {
+          localStorage.removeItem("sp_session");
+        }
+      }
+    } catch(e){ localStorage.removeItem("sp_session"); }
+  }, []);
+
   // Load data from Firestore on startup
   useEffect(()=>{
     const ref = doc(db, "appdata", "main");
@@ -113,22 +130,37 @@ export default function App() {
     </div>
   );
 
-  if (!session) return <Login staff={state.staff} onLogin={s=>setSession(s)}/>;
+  const handleLogin = (s, remember=true) => {
+    setSession(s);
+    if(remember){
+      try {
+        localStorage.setItem("sp_session", JSON.stringify({ session: s, savedAt: Date.now() }));
+      } catch(e){}
+    }
+  };
 
-  const props = { state, update, session, setSession };
+  const handleLogout = () => {
+    setSession(null);
+    try { localStorage.removeItem("sp_session"); } catch(e){}
+  };
+
+  if (!session) return <Login staff={state.staff} onLogin={handleLogin}/>;
+
+  const props = { state, update, session, setSession: handleLogout };
   return session.role==="admin" ? <AdminApp {...props}/> : <StaffApp {...props}/>;
 }
 
 /* ══ LOGIN ══════════════════════════════════════════════════ */
 function Login({ staff, onLogin }) {
-  const [user, setUser]  = useState("");
-  const [pwd, setPwd]  = useState("");
-  const [err,  setErr]   = useState("");
+  const [user,   setUser]   = useState("");
+  const [pwd,    setPwd]    = useState("");
+  const [err,    setErr]    = useState("");
+  const [remember, setRemember] = useState(true);
 
   const login = () => {
     const found = staff.find(s=>s.username===user.trim()&&s.password===pwd);
     if (!found) { setErr("Invalid username or password."); return; }
-    onLogin(found);
+    onLogin(found, remember);
   };
 
   return (
@@ -156,6 +188,11 @@ function Login({ staff, onLogin }) {
               onKeyDown={e=>e.key==="Enter"&&login()}/>
           </div>
         </div>
+        <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",marginBottom:16}}>
+          <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)}
+            style={{width:16,height:16,accentColor:"#6366f1",cursor:"pointer"}}/>
+          <span style={{fontSize:13,color:"#64748b"}}>Keep me logged in for 24 hours</span>
+        </label>
         <button onClick={login} style={{width:"100%",padding:"12px",borderRadius:9,border:"none",cursor:"pointer",fontSize:14,fontWeight:800,background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff"}}>
           Sign In →
         </button>
@@ -441,6 +478,7 @@ function AdminApp({ state, update, session, setSession }) {
   const NAV = [
     {key:"dashboard", label:"Dashboard",      icon:"⬡"},
     {key:"setup",     label:"Setup",          icon:"⚙", highlight:agents.length===0||products.length===0},
+    {key:"products",  label:"Products",       icon:"📦"},
     {key:"agents",    label:"All Agents",     icon:"◉"},
     {key:"staff",     label:"Staff",          icon:"👤"},
     {key:"passwords", label:"Passwords",      icon:"🔑"},
@@ -456,6 +494,7 @@ function AdminApp({ state, update, session, setSession }) {
     <Shell session={session} setSession={setSession} nav={NAV} activeTab={tab} setTab={setTab} pendingCount={pendingCount}>
       {tab==="dashboard" && <AdminDashboard {...sharedProps} setTab={setTab}/>}
       {tab==="setup"     && <Setup {...sharedProps}/>}
+      {tab==="products"   && <ProductsOverview agents={agents} products={products}/>}
       {tab==="agents"    && <AgentsView agents={agents} products={products}/>}
       {tab==="staff"     && <StaffManager {...sharedProps}/>}
       {tab==="passwords"  && <PasswordManager staff={staff} session={session} updateStaff={updateStaff}/>}
@@ -609,12 +648,17 @@ function Setup({products,agents,addProduct,updateProduct,deleteProduct,addAgent,
     updateProduct(id,p=>({...p,name:pEN.trim(),sku:pES.trim().toUpperCase()}));
     setPEdit(null); flash("Product updated!");
   };
+  const [aProducts, setAProducts] = useState([]);
+  const toggleAgentProduct = (pid) => setAProducts(prev => prev.includes(pid) ? prev.filter(x=>x!==pid) : [...prev,pid]);
+
   const saveAgent=()=>{
     if(!aName.trim()||!aState) return flash("Enter agent name and select state","warn");
+    if(aProducts.length===0) return flash("Select at least one product for this agent","warn");
+    const assignedProds = products.filter(p=>aProducts.includes(p.id)).map(p=>({...p,initialStock:0,currentStock:0,totalDelivered:0}));
     addAgent({id:uid(),agentName:aName.trim(),state:aState,phone:aPhone.trim(),
-      products:products.map(p=>({...p,initialStock:0,currentStock:0,totalDelivered:0})),
+      products:assignedProds,
       totalOrdersAssigned:0,totalOrdersDelivered:0,dailyLogs:[],stockHistory:[]});
-    setAName("");setAState("");setAPhone(""); flash(`${aName.trim()} added for ${aState}!`);
+    setAName("");setAState("");setAPhone("");setAProducts([]); flash(`${aName.trim()} added for ${aState}!`);
   };
   const saveAgentEdit=id=>{
     if(!aEN.trim()||!aES) return;
@@ -685,8 +729,26 @@ function Setup({products,agents,addProduct,updateProduct,deleteProduct,addAgent,
               </Sel>
               <Inp label="Phone (optional)" value={aPhone} onChange={e=>setAPhone(e.target.value)} placeholder="e.g. 08012345678"/>
             </div>
+            <div style={{marginBottom:16}}>
+              <label style={{fontSize:12,color:"#64748b",fontWeight:600,marginBottom:8,display:"block"}}>Assign Products to this Agent</label>
+              {products.length===0
+                ? <div style={{fontSize:12,color:"#334155"}}>No products yet — add products first.</div>
+                : <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:180,overflowY:"auto"}}>
+                    {products.map(p=>(
+                      <label key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#07090f",borderRadius:7,border:`1px solid ${aProducts.includes(p.id)?"#6366f1":"#1a2238"}`,cursor:"pointer",transition:"border-color .15s"}}>
+                        <input type="checkbox" checked={aProducts.includes(p.id)} onChange={()=>toggleAgentProduct(p.id)} style={{accentColor:"#6366f1",width:14,height:14}}/>
+                        <div>
+                          <div style={{fontSize:13,fontWeight:600,color:"#f1f5f9"}}>{p.name}</div>
+                          <div style={{fontSize:11,color:"#475569",fontFamily:"'JetBrains Mono',monospace"}}>{p.sku}</div>
+                        </div>
+                        {aProducts.includes(p.id) && <span style={{marginLeft:"auto",fontSize:11,color:"#6366f1",fontWeight:700}}>✓ Selected</span>}
+                      </label>
+                    ))}
+                  </div>
+              }
+            </div>
             <Btn onClick={saveAgent} style={{width:"100%"}} variant={products.length===0?"ghost":"primary"}>Add Agent</Btn>
-            <div style={{fontSize:12,color:"#334155",marginTop:12,lineHeight:1.7}}>💡 Multiple agents can be added per state. Set their stock in <b style={{color:"#f59e0b"}}>Stock Manager</b> after adding.</div>
+            <div style={{fontSize:12,color:"#334155",marginTop:12,lineHeight:1.7}}>💡 You can assign specific products to each agent. Set their stock in <b style={{color:"#f59e0b"}}>Stock Manager</b> after adding.</div>
           </Card>
           <Card style={{padding:0,overflow:"hidden"}}>
             {agents.length===0?<EmptyState icon="👤" title="No agents yet" sub="Add your first agent"/>:(
@@ -1948,6 +2010,199 @@ function ChangePassword({session, updateStaff, state}) {
           </div>
         </Card>
       </div>
+    </div>
+  );
+}
+
+/* ══ PRODUCTS OVERVIEW ══════════════════════════════════════ */
+function ProductsOverview({ agents, products }) {
+  const [selected, setSelected] = useState(null);
+
+  if(products.length === 0) return (
+    <div>
+      <PageHeader title="Products Overview" sub="Real-time stock summary across all agents"/>
+      <EmptyState icon="📦" title="No products yet" sub="Add products in Setup first."/>
+    </div>
+  );
+
+  // Compute totals per product across all agents
+  const productStats = products.map(p => {
+    const agentsWithProduct = agents.filter(a => a.products.some(x => x.id === p.id));
+    const totalInitial   = agentsWithProduct.reduce((s,a) => { const ap=a.products.find(x=>x.id===p.id); return s+(ap?.initialStock||0); }, 0);
+    const totalDelivered = agentsWithProduct.reduce((s,a) => { const ap=a.products.find(x=>x.id===p.id); return s+(ap?.totalDelivered||0); }, 0);
+    const totalRemaining = agentsWithProduct.reduce((s,a) => { const ap=a.products.find(x=>x.id===p.id); return s+(ap?.currentStock||0); }, 0);
+    const pct = totalInitial > 0 ? Math.round((totalRemaining/totalInitial)*100) : 0;
+    const agentBreakdown = agentsWithProduct.map(a => {
+      const ap = a.products.find(x => x.id===p.id);
+      return {
+        agentId: a.id, agentName: a.agentName, state: a.state,
+        initial: ap?.initialStock||0, delivered: ap?.totalDelivered||0,
+        remaining: ap?.currentStock||0,
+        rate: deliveryRate(a),
+      };
+    }).sort((a,b) => b.remaining - a.remaining);
+    return { ...p, totalInitial, totalDelivered, totalRemaining, pct, agentBreakdown, agentsCount: agentsWithProduct.length };
+  });
+
+  return (
+    <div>
+      <PageHeader title="Products Overview"
+        sub={`${products.length} products · real-time stock across all agents`}
+        right={<div style={{background:"#10b98118",border:"1px solid #10b98130",color:"#10b981",padding:"6px 14px",borderRadius:20,fontSize:12,fontWeight:700}}>🔴 LIVE</div>}
+      />
+
+      {/* PRODUCT CARDS GRID */}
+      <div className="stat-grid-4" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}}>
+        {productStats.map(p => (
+          <div key={p.id}
+            onClick={()=>setSelected(selected===p.id?null:p.id)}
+            style={{background:"#0d1120",borderRadius:14,border:`2px solid ${selected===p.id?"#6366f1":"#151c2e"}`,padding:18,cursor:"pointer",transition:"border-color .2s,box-shadow .2s",boxShadow:selected===p.id?"0 0 0 3px #6366f120":"none"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+              <div>
+                <div style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"#6366f1",marginBottom:3}}>{p.sku}</div>
+                <div style={{fontSize:13,fontWeight:800,color:"#f1f5f9",lineHeight:1.3}}>{p.name}</div>
+              </div>
+              <div style={{fontSize:11,color:"#475569",background:"#151c2e",padding:"2px 8px",borderRadius:20,whiteSpace:"nowrap"}}>{p.agentsCount} agents</div>
+            </div>
+
+            {/* Stock bar */}
+            <div style={{height:6,background:"#1a2238",borderRadius:3,overflow:"hidden",marginBottom:8}}>
+              <div style={{width:`${p.pct}%`,height:"100%",background:rc(p.pct),borderRadius:3,transition:"width .5s"}}/>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,textAlign:"center"}}>
+              <div>
+                <div style={{fontSize:16,fontWeight:900,color:"#f1f5f9"}}>{p.totalInitial.toLocaleString()}</div>
+                <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:.5}}>Initial</div>
+              </div>
+              <div>
+                <div style={{fontSize:16,fontWeight:900,color:"#10b981"}}>{p.totalDelivered.toLocaleString()}</div>
+                <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:.5}}>Delivered</div>
+              </div>
+              <div>
+                <div style={{fontSize:16,fontWeight:900,color:rc(p.pct)}}>{p.totalRemaining.toLocaleString()}</div>
+                <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:.5}}>Left</div>
+              </div>
+            </div>
+
+            <div style={{marginTop:10,fontSize:11,fontWeight:700,color:rc(p.pct),textAlign:"center"}}>
+              {p.pct}% remaining {selected===p.id?"▲":"▼"}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* EXPANDED AGENT BREAKDOWN */}
+      {selected && (() => {
+        const p = productStats.find(x=>x.id===selected);
+        if(!p) return null;
+        return (
+          <Card style={{border:"1px solid #6366f130"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+              <div>
+                <div style={{fontSize:16,fontWeight:800,color:"#f1f5f9"}}>{p.name} — Agent Breakdown</div>
+                <div style={{fontSize:12,color:"#64748b",marginTop:3}}>Stock status per agent · sorted by units remaining</div>
+              </div>
+              <div style={{display:"flex",gap:20}}>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:900,color:"#f1f5f9"}}>{p.totalInitial.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#475569"}}>Total Initial</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:900,color:"#10b981"}}>{p.totalDelivered.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#475569"}}>Total Delivered</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:20,fontWeight:900,color:rc(p.pct)}}>{p.totalRemaining.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#475569"}}>Total Remaining</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead>
+                  <tr style={{background:"#07090f"}}>
+                    <TH>#</TH><TH>Agent</TH><TH>State</TH><TH>Initial Stock</TH><TH>Delivered</TH><TH>Remaining</TH><TH>Used %</TH><TH>Delivery Rate</TH><TH>Status</TH>
+                  </tr>
+                </thead>
+                <tbody>
+                  {p.agentBreakdown.map((a,i) => {
+                    const usedPct = a.initial > 0 ? Math.round(((a.initial-a.remaining)/a.initial)*100) : 0;
+                    const status = a.remaining < 5 ? "Critical" : a.remaining < 15 ? "Low" : "OK";
+                    const statusColor = a.remaining < 5 ? "#ef4444" : a.remaining < 15 ? "#f59e0b" : "#10b981";
+                    return (
+                      <tr key={a.agentId} className="rhov">
+                        <TD><span style={{fontFamily:"'JetBrains Mono',monospace",color:"#334155",fontSize:11}}>{String(i+1).padStart(2,"0")}</span></TD>
+                        <TD><b style={{color:"#f1f5f9"}}>{a.agentName}</b></TD>
+                        <TD style={{color:"#64748b"}}>{a.state}</TD>
+                        <TD style={{color:"#94a3b8"}}>{a.initial.toLocaleString()}</TD>
+                        <TD style={{color:"#10b981",fontWeight:700}}>{a.delivered.toLocaleString()}</TD>
+                        <TD style={{fontWeight:800,color:statusColor,fontSize:15}}>{a.remaining.toLocaleString()}</TD>
+                        <TD>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <div style={{width:60,height:6,background:"#1a2238",borderRadius:3,overflow:"hidden"}}>
+                              <div style={{width:`${usedPct}%`,height:"100%",background:"#6366f1",borderRadius:3}}/>
+                            </div>
+                            <span style={{fontSize:12,color:"#818cf8",fontWeight:600}}>{usedPct}%</span>
+                          </div>
+                        </TD>
+                        <TD><RateBar rate={a.rate} width={50}/></TD>
+                        <TD>
+                          <span style={{fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,
+                            background:`${statusColor}18`,color:statusColor,border:`1px solid ${statusColor}30`}}>
+                            {status}
+                          </span>
+                        </TD>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {p.agentBreakdown.length === 0 && (
+              <div style={{textAlign:"center",padding:"30px",color:"#334155",fontSize:13}}>
+                No agents have been assigned this product yet.
+              </div>
+            )}
+          </Card>
+        );
+      })()}
+
+      {/* FULL SUMMARY TABLE */}
+      <Card style={{marginTop:20}}>
+        <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",marginBottom:16}}>📊 Full Stock Summary — All Products</div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead>
+              <tr style={{background:"#07090f"}}>
+                <TH>Product</TH><TH>SKU</TH><TH>Agents</TH><TH>Initial Stock</TH><TH>Total Delivered</TH><TH>Remaining</TH><TH>Stock Health</TH>
+              </tr>
+            </thead>
+            <tbody>
+              {productStats.map(p => (
+                <tr key={p.id} className="rhov" style={{cursor:"pointer",background:selected===p.id?"#0d1528":"transparent"}} onClick={()=>setSelected(selected===p.id?null:p.id)}>
+                  <TD><b style={{color:"#f1f5f9"}}>{p.name}</b></TD>
+                  <TD><span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#6366f1",background:"#6366f112",padding:"2px 8px",borderRadius:5}}>{p.sku}</span></TD>
+                  <TD style={{color:"#64748b"}}>{p.agentsCount} agents</TD>
+                  <TD>{p.totalInitial.toLocaleString()}</TD>
+                  <TD style={{color:"#10b981",fontWeight:700}}>{p.totalDelivered.toLocaleString()}</TD>
+                  <TD style={{fontWeight:800,color:rc(p.pct)}}>{p.totalRemaining.toLocaleString()}</TD>
+                  <TD>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{width:100,height:6,background:"#1a2238",borderRadius:3,overflow:"hidden"}}>
+                        <div style={{width:`${p.pct}%`,height:"100%",background:rc(p.pct),borderRadius:3}}/>
+                      </div>
+                      <span style={{fontSize:12,fontWeight:700,color:rc(p.pct)}}>{p.pct}%</span>
+                    </div>
+                  </TD>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

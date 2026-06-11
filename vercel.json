@@ -1,0 +1,10 @@
+{
+  "build": { "env": { "CI": "false", "GENERATE_SOURCEMAP": "false" } },
+  "rewrites": [{ "source": "/(.*)", "destination": "/" }],
+  "headers": [
+    {
+      "source": "/static/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    }
+  ]
+}
